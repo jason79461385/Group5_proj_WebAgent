@@ -11,4 +11,4 @@ To install packages: `pip install -r requirements.txt`
 # How to run this
 `python main.py`
 
-[![Watch the video](https://img.youtube.com/vi/Et9QFaEMSuk/maxresdefault.jpg)](https://youtu.be/Et9QFaEMSuk)
+[![Watch the video](https://img.youtube.com/vi/FwnJ_RSyNBU/maxresdefault.jpg)](https://youtu.be/FwnJ_RSyNBU)
