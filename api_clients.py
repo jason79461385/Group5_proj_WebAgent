@@ -1,9 +1,43 @@
+# api_clients.py
+# [更新] V11 - 支援 RAG 注入與 Reflexion 反思
+
 import requests
 import json
+import re
 from openai import OpenAI 
 from config import (GPT_OSS_URL, GPT_OSS_MODEL_NAME, USE_OPENAI_API, 
                     OPENAI_API_KEY, OPENAI_MODEL_NAME, OMNIPARSER_API_URL, UI_TARS_API_URL)
 from utils import parse_omni_coordinates, parse_coords_from_string, parse_json_from_string
+
+# [New] 強健的 JSON 解析器 (取代 utils.parse_json_from_string)
+def robust_json_parse(text):
+    """
+    嘗試從髒亂的 LLM 回覆中提取並修復 JSON。
+    支援 ```json 區塊提取與常見語法錯誤修復。
+    """
+    if not text: return None
+    try:
+        # 1. 嘗試直接解析
+        return json.loads(text)
+    except: pass
+
+    # 2. 提取 Markdown Code Block
+    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if match:
+        try: return json.loads(match.group(1))
+        except: pass
+    
+    # 3. 尋找最外層的大括號
+    match = re.search(r"(\{.*\})", text, re.DOTALL)
+    if match:
+        try:
+            # 嘗試修復單引號轉雙引號 (簡單版)
+            clean_json = match.group(1).replace("'", '"') 
+            return json.loads(clean_json)
+        except: pass
+
+    print(f"❌ JSON Parse Failed. Raw text: {text[:100]}...")
+    return None
 
 def call_brain(user_goal: str, history: list, page_state: dict, som_image_b64: str, rag_data: dict = None, element_text_description: str = "", page_content: str = "", high_level_plan: str = "", scratchpad_data: str = "") -> dict | None:
     """
@@ -40,7 +74,7 @@ def call_brain(user_goal: str, history: list, page_state: dict, som_image_b64: s
     else:
         plan_section = "\n(No high-level plan available. You must plan and execute autonomously.)\n"
         
-    # [Updated] 加入資料清洗規則 (Few-Shot Learning)
+    #JSON issue fix
     system_prompt = """
     You are an advanced Browser Automation Agent operating in a "Planner-Executor" cognitive architecture.
     
@@ -124,11 +158,6 @@ def call_brain(user_goal: str, history: list, page_state: dict, som_image_b64: s
         - Before using action "finish", you must explicit compare the FOUND value vs. the REQUIRED value in your thought process.
         - Thought: "Found '84 Reviews'. User wants '> 100'. 84 is NOT greater than 100. Mismatch. I must go back."
 
-    **Examples:**
-    - User: "Provide a recipe for vegetarian lasagna with more than 100 reviews" 
-      -> value: "vegetarian lasagna" (Remove "recipe", "100 reviews")
-    - User: "Find a hotel in Paris under $200 with free wifi" 
-      -> value: "Paris" (You will filter price/wifi later)
     
     **COMMANDS (Action Space):**
     - **click**: Click on a specific element ID.
@@ -144,14 +173,44 @@ def call_brain(user_goal: str, history: list, page_state: dict, som_image_b64: s
       - **MANDATORY USE:** You MUST use this action immediately when you see the requested data on screen. 
 
     **Response Format (JSON Only):**
+    You must respond with a RAW JSON object. Do not include markdown formatting (```json), explanations, or conversational filler.
+    
+    **JSON Schema:**
     {
         "planner_thought": "Phase 1...",
         "executor_thought": "Phase 2...",
         "action": "click" | "type" | "scroll" | "wait" | "goto_url" | "finish" | "grounding" | "retrieve" | "go_back" | "extract_content",
         "target_description": "Search Input Bar",
-        "element_id": 0,
+        "element_id": 123,  // Integer ID from the interactive list. Use 0 if using grounding.
         "value": "text input OR final answer OR extracted data",
         "verification_evidence": "Found Rating: 4.6 (116), Found Reviews: 84. Goal: >100 Reviews. Result: FAIL" 
+    }
+
+    **CRITICAL RULES:**
+    1. **NO Text Actions:** Do not output "Action: type -> Target: ...". ONLY JSON.
+    2. **ID Priority:** Always prefer `element_id` from the list. Use `grounding` only if ID is missing.
+    3. **Data Protocol:** If you see the answer, use `extract_content` FIRST, then `finish` in the next turn.
+
+    **FEW-SHOT EXAMPLES (JSON ONLY):**
+
+    User Goal: "Search for iPhone 15"
+    {
+        "planner_thought": "I need to search for the product.",
+        "executor_thought": "I see the search bar (ID 5). I will type the query.",
+        "action": "type",
+        "target_description": "Search Input",
+        "element_id": 5,
+        "value": "iPhone 15"
+    }
+
+    User Goal: "Get the price of the hotel"
+    {
+        "planner_thought": "The price is visible on screen.",
+        "executor_thought": "I see '$199' next to the hotel name. I will save this.",
+        "action": "extract_content",
+        "target_description": "Hotel Price",
+        "element_id": 0,
+        "value": "$199"
     }
     """
     
@@ -170,7 +229,7 @@ def call_brain(user_goal: str, history: list, page_state: dict, som_image_b64: s
     {element_text_description}
 
     [Page Content] (Text observed on page):
-    {page_content}
+    {page_content[:1000]}
     
     [📝 Current Scratchpad (Collected Data)]:
     {scratchpad_data}
@@ -205,7 +264,7 @@ def _call_openai(system_prompt, user_content, image_b64):
             response_format={"type": "json_object"}
         )
         content = response.choices[0].message.content
-        return parse_json_from_string(content)
+        return robust_json_parse(content)
     except Exception as e:
         print(f"❌ OpenAI Error: {e}")
         return None
@@ -228,7 +287,7 @@ def _call_local_llm(system_prompt, user_content, image_b64):
         response = requests.post(GPT_OSS_URL, json=payload, timeout=60)
         response.raise_for_status()
         text_response = response.json().get('response', '')
-        return parse_json_from_string(text_response)
+        return robust_json_parse(text_response)
     except Exception as e:
         print(f"❌ Local LLM Error: {e}")
         return None
@@ -316,7 +375,7 @@ def call_visual_verification(user_goal: str, image_b64: str) -> tuple[bool, str]
         print(f"🕵️ [VQA Result]: {text_response}")
         
         # 嘗試解析
-        result = parse_json_from_string(text_response)
+        result = robust_json_parse(text_response)
         
         # 如果解析成功
         if result and "pass" in result:
@@ -380,7 +439,7 @@ def call_eyes_ui_tars_grounding(sub_task: str, image_b64: str) -> dict | None:
         response.raise_for_status()
         text_response = response.json()['choices'][0]['message']['content']
         print(f" UI-TARS 回應: {text_response}")
-        return parse_coords_from_string(text_response)
+        return robust_json_parse(text_response)
     except Exception as e:
         print(f"❌ UI-TARS 呼叫失敗: {e}")
         return None
@@ -412,7 +471,7 @@ def call_popup_killer(image_b64: str) -> dict | None:
         text_response = response.json()['choices'][0]['message']['content']
         if "No popup" in text_response:
             return None
-        return parse_coords_from_string(text_response) 
+        return robust_json_parse(text_response) 
     except Exception:
         return None
 

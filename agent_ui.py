@@ -168,7 +168,11 @@ class AgentWorker(QThread):
                     brain_command["action"] = "goto_url"
                     brain_command["value"] = value      
                     # [Fix] 整包傳入，讓 Core 處理 Log 和 History
-                    self.core.execute_action(brain_command)
+                    result_dict = self.core.execute_action(brain_command)
+
+                    # 手動提取 success 和 message，並給予預設值以防萬一
+                    success = result_dict.get("success", False)
+                    msg = result_dict.get("message", "Unknown Action Result")
                     continue
                 # ========================================================
 
@@ -184,6 +188,10 @@ class AgentWorker(QThread):
                     if verified:
                         self.log_signal.emit(f"✅ {reason}")
                         self.log_signal.emit("Done: 任務完成")
+                        final_answer = brain_command.get('value', '')
+                        if not final_answer:
+                            final_answer = str(self.core.scratchpad)
+                        self.log_signal.emit(f"🏁 最終答案: {final_answer}")
                         break
                     else:
                         self.log_signal.emit(f"❌ {reason}")
@@ -205,7 +213,11 @@ class AgentWorker(QThread):
                     continue
 
                 # 4. 執行動作 (呼叫 Core)
-                success, msg = self.core.execute_action(brain_command)
+                result_dict = self.core.execute_action(brain_command)
+
+                    # 手動提取 success 和 message，並給予預設值以防萬一
+                success = result_dict.get("success", False)
+                msg = result_dict.get("message", "Unknown Action Result")
                 if not success:
                     self.log_signal.emit(f"Warning: {msg}")
                 

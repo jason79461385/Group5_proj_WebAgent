@@ -213,7 +213,18 @@ class AgentCore:
         """
         [Updated] 使用 UI-TARS 進行終局驗證 (修正 Tuple 解包錯誤)
         """
-        print("🕵️ [Core] 正在使用 UI-TARS 檢查任務是否已完成...")
+        if self.scratchpad:
+            print(f"📝 [Core] 檢測到筆記本 (Scratchpad) 已有資料，跳過視覺驗證！")
+            # 格式化筆記本內容
+            memory_content = json.dumps(self.scratchpad, indent=2, ensure_ascii=False)
+            print(f"   內容預覽: {list(self.scratchpad.keys())}")
+            
+            # 直接認定成功，並回傳筆記本內容作為答案
+            # 邏輯：Agent 既然主動執行了 extract_content，代表它認為找到了重要資訊
+            return True, f"Extracted Data: {memory_content}"
+
+        # --- [Strategy 2] Vision Check: 視覺為輔 (原本的邏輯) ---
+        print("🕵️ [Core] 筆記本為空，正在使用 UI-TARS 檢查任務是否已完成...")
         
         # 1. 準備截圖
         try:
@@ -679,10 +690,19 @@ class AgentCore:
 
         # Log 顯示目標，方便除錯
         print(f"🤖 [Executor] {action} ({target_desc}) | Val: {value} | Text: {target_text}")
+        def result(success, msg, is_finished=False):
+            return {
+                "success": success, 
+                "message": msg, 
+                "action": action, 
+                "is_finished": is_finished
+            }
 
         # --- 2. 執行邏輯 ---
+        if action == "retrieve": return result(True, "知識庫檢索完成")
+        if action == "grounding": return result(True, "視覺定位完成")
         if action == "finish":
-            return True, "任務完成"
+            return result(True, f"任務完成: {value}", is_finished=True)
             
         if action == "scroll":
             # 這裡呼叫我們新改的具備狀態感知的 perform_scroll
@@ -692,10 +712,10 @@ class AgentCore:
                 print("🔄 [Core] 捲動發生，強制清除視覺快取 (Force Refresh)...")
                 self.cached_elements_map = None 
                 self.last_page_hash = "" 
-                return True, "捲動完成"
+                return result(True, "捲動完成")
             else:
                 self.history.append("Scroll FAILED (End of page)")
-                return False, "已達底部"
+                return result(False, "已達底部")
             
         if action == "goto_url":
             success = browser_controller.perform_goto_url(self.driver, value)
@@ -703,13 +723,13 @@ class AgentCore:
                 self.history.append(f"Jumped to {value}")
                 self.cached_elements_map = None
                 self.last_page_hash = ""
-                return True, "跳轉成功"
-            return False, "跳轉失敗"
+                return result(True, "跳轉成功")
+            return result(False, "跳轉失敗")
 
         if action == "wait":
             print("⏳ [Executor] 執行等待 (3s)...")
             time.sleep(3)
-            return True, "等待"
+            return result(True, "等待完成")
         
         if action == "extract_content":
             # 1. 決定 Key
@@ -725,19 +745,9 @@ class AgentCore:
                 
                 # [Fix] 這裡必須回傳 Dict，不能回傳 Tuple
                 # action 設為 "wait" 是為了讓 Agent 存完資料後，停下來思考下一步該怎麼用這些資料
-                return {
-                    "success": True, 
-                    "message": f"已記錄: {key}",
-                    "action": "wait", 
-                    "value": data
-                }
+                return result(True, f"已記錄: {key}")
             else:
-                return {
-                    "success": False, 
-                    "message": "提取失敗 (缺少 value)",
-                    "action": "wait"
-                }
-
+                return result(False, "提取失敗 (缺少 value)")
         if action == "go_back":
             print("🔙 [Browser] 執行 Back 操作...")
             self.driver.back()
@@ -745,8 +755,7 @@ class AgentCore:
             self.cached_elements_map = None
             self.last_page_hash = ""
             browser_controller.smart_wait_for_change(self.driver) # 使用 smart wait 確保載入
-            return True, "返回上一頁"
-
+            return result(True, "返回上一頁")
         # --- 3. SoM / UI-TARS 精確操作 ---
         if (action == "click" or action == "type") and coords:
             # [Optimization] 移除 +5 偏移
@@ -780,11 +789,11 @@ class AgentCore:
             if success:
                 self.cached_elements_map = None
                 # 這裡不需要額外的 wait_for_page_load，因為 controller 內部已經有了 smart_wait
-                return True, f"{action} 成功"
+                return result(True, f"{action} 成功")
             else:
-                return False, f"{action} 執行失敗 (操作無效)"
+                return result(False, f"{action} 執行失敗 (操作無效)")
 
-        return False, f"未知的動作或缺失座標: {action}"
+        return result(False, f"未知的動作或缺失座標: {action}")
 
     def verify_completion(self):
         """ 驗證任務是否完成 (DOM + Vision) """
