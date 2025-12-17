@@ -1,0 +1,11 @@
+selenium
+PyQt6
+requests
+pillow
+undetected-chromedriver
+langchain-community
+langchain-core
+chromadb
+openai
+html2text
+numpy
